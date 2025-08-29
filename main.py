@@ -20,7 +20,7 @@ def generate_x_post(user_input: str) -> str:
     Here's the topic provided by the user for which you need to generate a post:
 
     <topic>
-     ${user_input}
+     {user_input}
     </topic>
     """
 
@@ -30,7 +30,7 @@ def generate_x_post(user_input: str) -> str:
         json=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer ${OPENAI_API_KEY}",
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
         },
     )
 
