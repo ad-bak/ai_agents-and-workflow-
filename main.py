@@ -1,161 +1,118 @@
-import json
 import sys
 import os
-import sqlite3
-from typing import List, Optional
 
 # Run "uv sync" to install the below packages
-from pypdf import PdfReader
 from dotenv import load_dotenv
 from openai import OpenAI
-from pydantic import BaseModel, Field
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI()
 
 
-class DateInfo(BaseModel):
-    date: str
-    description: str
+def load_file(path: str) -> str:
+    if not os.path.exists(path):
+        print(f"Error: The file '{path}' does not exist.")
+        sys.exit(1)
+
+    print("Loading file:", path)
+    with open(path, "r", encoding="utf-8") as file:
+        return file.read()
 
 
-class AmountInfo(BaseModel):
-    value: float
-    currency: Optional[str] = None
-    description: str
+def save_file(path: str, content: str) -> None:
+    print("Saving file:", path)
+    with open(path, "w", encoding="utf-8") as file:
+        file.write(content)
 
 
-class DocumentData(BaseModel):
-    document_type: str = Field(description="The type or category of the document")
-    people: List[str] = Field(default_factory=list, description="Names of people found in the document")
-    organizations: List[str] = Field(default_factory=list, description="Organizations mentioned in the document")
-    locations: List[str] = Field(default_factory=list, description="Locations mentioned in the document")
-    dates: List[DateInfo] = Field(default_factory=list, description="Important dates found in the document")
-    amounts: List[AmountInfo] = Field(default_factory=list, description="Monetary amounts or numerical values")
-    phone_numbers: List[str] = Field(default_factory=list, description="Phone numbers found in the document")
-    emails: List[str] = Field(default_factory=list, description="Email addresses found in the document")
-    summary: str = Field(description="Brief summary of the document content")
+def generate_article_draft(outline: str) -> str:
+    print("Generating article draft...")
+    example_posts_path = "example_posts"
 
+    if not os.path.exists(example_posts_path):
+        raise FileNotFoundError(f"The directory '{example_posts_path}' does not exist.")
 
-def setup_database():
-    conn = sqlite3.connect("documents.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS documents (
-            id INTEGER PRIMARY KEY,
-            filename TEXT,
-            document_type TEXT,
-            extracted_data TEXT,
-            processed_date TEXT
+    example_posts = []
+    for filename in os.listdir(example_posts_path):
+        if filename.lower().endswith(".md") or filename.lower().endswith(".mdx"):
+            with open(
+                os.path.join(example_posts_path, filename), "r", encoding="utf-8"
+            ) as file:
+                example_posts.append(file.read())
+
+    if not example_posts:
+        raise ValueError(
+            "No example blog posts found in the 'example_posts' directory."
         )
-    """)
-    conn.commit()
-    return conn
 
-
-def insert_document_data(conn, filename, document_type, extracted_data):
-    from datetime import datetime
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT INTO documents (
-            filename, document_type, extracted_data, processed_date
-        ) VALUES (?, ?, ?, ?)
-    """,
-        (
-            filename,
-            document_type,
-            json.dumps(extracted_data),
-            datetime.now().isoformat()
-        ),
+    example_posts_str = "\n\n".join(
+        f"<example-post-{i+1}>\n{post}\n</example-post-{i+1}>"
+        for i, post in enumerate(example_posts)
     )
-    conn.commit()
 
+    response = client.responses.create(
+        model="gpt-4o",
+        input=[
+            {
+                "role": "developer",
+                "content": """
+                    You are an expert blog post author who excels at writing engaging educational blog posts.
+                    Avoid using marketing language or jargon.
+                    Write in a clear, concise, and informative style for an audience that comprises both technical and non-technical readers.
+                    The blog post should be structured, informative, and easy to read.
+                """,
+            },
+            {
+                "role": "user",
+                "content": f"""
+                    Write a detailed blog post based on the following outline:
 
-def get_pdf_content(pdf_path: str) -> str:
-    with open(pdf_path, "rb") as f:
-        reader = PdfReader(f)
-        text = ""
-        for page in reader.pages:
-            text += page.extract_text()
-    return text
+                    <outline>
+                    {outline}
+                    </outline>
 
+                    Below are some example blog posts I wrote in the past:
+                    <example-posts>
+                    {example_posts_str}
+                    </example-posts>
 
-def extract_data_from_pdf(pdf_content: str, filename: str) -> DocumentData:
-    document_type = filename.split('.')[-2].split('/')[-1] if '/' in filename else filename.split('.')[0]
-    
-    prompt = f"""
-    You are an expert data extractor who excels at analyzing documents.
+                    Use the language, tone, style and way of writing from the example posts to generate your draft for the new blog post.
+                    DON'T use the content from those example posts!
 
-    Extract all relevant data from the below document (which was extracted from a PDF document).
-    The document appears to be: {document_type}
-    
-    Make sure to capture all important information including but not limited to:
-    - Names, addresses, dates, amounts, numbers
-    - Key entities, organizations, people
-    - Important metadata and classifications
-    - Any structured data present
-
-    <content>
-    {pdf_content}
-    </content>
-    """
-    
-    completion = client.beta.chat.completions.parse(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "user", "content": prompt}
+                    Return the blog post draft in raw markdown format so that I can directly use it in my markdown-processing pipeline.
+                    Don't add any additional text or explanations, just return the raw markdown content.
+                """,
+            },
         ],
-        response_format=DocumentData,
     )
-    
-    return completion.choices[0].message.parsed
+
+    generated_text = response.output_text
+
+    if generated_text.strip().startswith("```markdown"):
+        lines = generated_text.strip().splitlines()
+        if len(lines) > 2 and lines[-1].strip() == "```":
+            generated_text = "\n".join(lines[1:-1])
+
+    return generated_text
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python main.py pdfs/document.pdf")
-        return
+    if len(sys.argv) != 2:
+        print("Usage: python main.py <outline_file>")
+        sys.exit(1)
 
-    path = sys.argv[1]
-    pdf_files = []
+    outline_file = sys.argv[1]
 
-    if not os.path.exists(path):
-        print(f"Error: The path '{path}' does not exist.")
-        return
+    outline = load_file(outline_file)
 
-    if os.path.isfile(path):
-        if path.lower().endswith(".pdf"):
-            pdf_files.append(path)
-        else:
-            print(f"Error: The file '{path}' is not a PDF file.")
-            return
-    elif os.path.isdir(path):
-        for filename in os.listdir(path):
-            if filename.lower().endswith(".pdf"):
-                pdf_files.append(os.path.join(path, filename))
+    blog_post_draft = generate_article_draft(outline)
 
-    if not pdf_files:
-        print("No PDF files found.")
-        return
+    output_file = outline_file.replace(".txt", "_draft.md")
 
-    conn = setup_database()
+    save_file(output_file, blog_post_draft)
 
-    for pdf_file in pdf_files:
-        print(f"Processing {pdf_file}...")
-        try:
-            pdf_content = get_pdf_content(pdf_file)
-            document_details = extract_data_from_pdf(pdf_content, pdf_file)
-            document_type = document_details.document_type
-            insert_document_data(conn, pdf_file, document_type, document_details.model_dump())
-            print("Extracted Document Details:")
-            print(json.dumps(document_details.model_dump(), indent=2))
-            print("---------")
-        except Exception as e:
-            print(f"An error occurred while processing {pdf_file}: {e}")
-
-    conn.close()
+    print(f"Blog post draft saved to '{output_file}'.")
 
 
 if __name__ == "__main__":
