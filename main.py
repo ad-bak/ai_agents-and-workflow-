@@ -1,118 +1,106 @@
-import sys
-import os
-
-# Run "uv sync" to install the below packages
 from dotenv import load_dotenv
 from openai import OpenAI
+import json
+
 
 load_dotenv()
-
 client = OpenAI()
 
 
-def load_file(path: str) -> str:
-    if not os.path.exists(path):
-        print(f"Error: The file '{path}' does not exist.")
-        sys.exit(1)
+def get_temperature(city: str) -> float:
+    """
+    Get the current temperature in a given city.
 
-    print("Loading file:", path)
-    with open(path, "r", encoding="utf-8") as file:
-        return file.read()
-
-
-def save_file(path: str, content: str) -> None:
-    print("Saving file:", path)
-    with open(path, "w", encoding="utf-8") as file:
-        file.write(content)
+    Parameters:
+    - city (str): The name of the city.
+    """
+    print("Fetching temperature...", city)
 
 
-def generate_article_draft(outline: str) -> str:
-    print("Generating article draft...")
-    example_posts_path = "example_posts"
+available_functions = {
+    "get_temperature": get_temperature,
+}
 
-    if not os.path.exists(example_posts_path):
-        raise FileNotFoundError(f"The directory '{example_posts_path}' does not exist.")
-
-    example_posts = []
-    for filename in os.listdir(example_posts_path):
-        if filename.lower().endswith(".md") or filename.lower().endswith(".mdx"):
-            with open(
-                os.path.join(example_posts_path, filename), "r", encoding="utf-8"
-            ) as file:
-                example_posts.append(file.read())
-
-    if not example_posts:
-        raise ValueError(
-            "No example blog posts found in the 'example_posts' directory."
-        )
-
-    example_posts_str = "\n\n".join(
-        f"<example-post-{i+1}>\n{post}\n</example-post-{i+1}>"
-        for i, post in enumerate(example_posts)
-    )
-
-    response = client.responses.create(
-        model="gpt-4o",
-        input=[
-            {
-                "role": "developer",
-                "content": """
-                    You are an expert blog post author who excels at writing engaging educational blog posts.
-                    Avoid using marketing language or jargon.
-                    Write in a clear, concise, and informative style for an audience that comprises both technical and non-technical readers.
-                    The blog post should be structured, informative, and easy to read.
-                """,
+tools = [
+    {
+        "type": "function",
+        "name": "get_temperature",
+        "description": " Get the current temperature in a given city.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": {
+                    "type": "string",
+                    "description": "City for which to get the temperature.",
+                }
             },
-            {
-                "role": "user",
-                "content": f"""
-                    Write a detailed blog post based on the following outline:
+            "additionalProperties": False,
+            "required": ["city"],
+        },
+    }
+]
 
-                    <outline>
-                    {outline}
-                    </outline>
 
-                    Below are some example blog posts I wrote in the past:
-                    <example-posts>
-                    {example_posts_str}
-                    </example-posts>
+def execute_tool_call(tool_call) -> str | float:
+    """
+    Executes a tool call and returns the output.
+    """
+    fn_name = tool_call.name
+    fn_args = json.loads(tool_call.arguments)
 
-                    Use the language, tone, style and way of writing from the example posts to generate your draft for the new blog post.
-                    DON'T use the content from those example posts!
+    if fn_name in available_functions:
+        function_to_call = available_functions[fn_name]
+        try:
+            return function_to_call(**fn_args)
+        except Exception as e:
+            return f"Error calling {fn_name}: {e}"
 
-                    Return the blog post draft in raw markdown format so that I can directly use it in my markdown-processing pipeline.
-                    Don't add any additional text or explanations, just return the raw markdown content.
-                """,
-            },
-        ],
-    )
-
-    generated_text = response.output_text
-
-    if generated_text.strip().startswith("```markdown"):
-        lines = generated_text.strip().splitlines()
-        if len(lines) > 2 and lines[-1].strip() == "```":
-            generated_text = "\n".join(lines[1:-1])
-
-    return generated_text
+    return f"Unknown tool: {fn_name}"
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python main.py <outline_file>")
-        sys.exit(1)
+    messages = [
+        {
+            "role": "developer",
+            "content": "You are a helpful assistant. Answer the user's question in a friendly way.",
+        }
+    ]
 
-    outline_file = sys.argv[1]
+    while True:
+        user_input = input("Your question (type 'exit' to end the conversation): ")
+        if user_input == "exit":
+            break
 
-    outline = load_file(outline_file)
+        messages.append({"role": "user", "content": user_input})
+        response = client.responses.create(
+            model="gpt-4o",
+            input=messages,
+            tools=tools,
+        )
 
-    blog_post_draft = generate_article_draft(outline)
+        output = response.output[0]
+        messages.append(output)  # add to chat history to keep track of the conversation
 
-    output_file = outline_file.replace(".txt", "_draft.md")
+        if output.type != "function_call":
+            print(response.output_text)
+            continue
 
-    save_file(output_file, blog_post_draft)
+        tool_output = execute_tool_call(output)
+        messages.append(
+            {
+                "type": "function_call_output",
+                "call_id": output.call_id,
+                "output": str(tool_output),
+            }
+        )
 
-    print(f"Blog post draft saved to '{output_file}'.")
+        response = client.responses.create(
+            model="gpt-4o",
+            input=messages,
+        )
+        print(response.output_text)
+
+    print(messages)
 
 
 if __name__ == "__main__":
