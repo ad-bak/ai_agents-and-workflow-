@@ -1,13 +1,29 @@
-import os
-import requests
+import json
+from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI()
 
 
 def generate_x_post(user_input: str) -> str:
+    with open("post-examples.json", "r") as f:
+        examples = json.load(f)
+
+    examples_str = ""
+    for i, example in enumerate(examples, 1):
+        examples_str += f"""
+        <example-{i}>
+            <topic>
+                {example["topic"]}
+            </topic>
+            <post>
+                {example["post"]}
+            </post>
+        </example-{i}>
+        """
+
     prompt = f"""
     You are an expert social media manager, and you excel at crafting viral and highly engaging posts for X (formerly Twitter)
     
@@ -22,23 +38,21 @@ def generate_x_post(user_input: str) -> str:
     <topic>
      {user_input}
     </topic>
+
+
+    Here are some examples of topics and generated posts:
+    <examples>
+        {examples_str}
+    </examples>
+
+    Please use the tone, language, structure , and style of the examples provided above to generate a post that is engaging and relevant to the topic provided by the user.
+    Don't use the content from the examples!
+
     """
 
-    payload = {"model": "gpt-4o", "input": prompt}
-    response = requests.post(
-        "https://api.openai.com/v1/responses",
-        json=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-        },
-    )
+    response = client.responses.create(model="gpt-4o", input=prompt)
 
-    response_text = (
-        response.json().get("output", [{}])[0].get("content", [{}])[0].get("text", "")
-    )
-
-    return response_text
+    return response.output_text
 
 
 def main():
