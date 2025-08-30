@@ -2,15 +2,40 @@ import json
 import sys
 import os
 import sqlite3
+from typing import List, Optional
 
 # Run "uv sync" to install the below packages
 from pypdf import PdfReader
 from dotenv import load_dotenv
-import requests
+from openai import OpenAI
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+class DateInfo(BaseModel):
+    date: str
+    description: str
+
+
+class AmountInfo(BaseModel):
+    value: float
+    currency: Optional[str] = None
+    description: str
+
+
+class DocumentData(BaseModel):
+    document_type: str = Field(description="The type or category of the document")
+    people: List[str] = Field(default_factory=list, description="Names of people found in the document")
+    organizations: List[str] = Field(default_factory=list, description="Organizations mentioned in the document")
+    locations: List[str] = Field(default_factory=list, description="Locations mentioned in the document")
+    dates: List[DateInfo] = Field(default_factory=list, description="Important dates found in the document")
+    amounts: List[AmountInfo] = Field(default_factory=list, description="Monetary amounts or numerical values")
+    phone_numbers: List[str] = Field(default_factory=list, description="Phone numbers found in the document")
+    emails: List[str] = Field(default_factory=list, description="Email addresses found in the document")
+    summary: str = Field(description="Brief summary of the document content")
 
 
 def setup_database():
@@ -57,7 +82,7 @@ def get_pdf_content(pdf_path: str) -> str:
     return text
 
 
-def extract_data_from_pdf(pdf_content: str, filename: str) -> dict:
+def extract_data_from_pdf(pdf_content: str, filename: str) -> DocumentData:
     document_type = filename.split('.')[-2].split('/')[-1] if '/' in filename else filename.split('.')[0]
     
     prompt = f"""
@@ -75,81 +100,17 @@ def extract_data_from_pdf(pdf_content: str, filename: str) -> dict:
     <content>
     {pdf_content}
     </content>
-
-    Return your response as a JSON object without any extra text or explanation.
-"""
-    response = requests.post(
-        "https://api.openai.com/v1/responses",
-        json={
-            "model": "gpt-4o-mini",
-            "input": prompt,
-            "text": {
-                "format": {
-                    "name": "document",
-                    "type": "json_schema",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "document_type": {
-                                "type": "string",
-                                "description": "The type or category of the document",
-                            },
-                            "entities": {
-                                "type": "object",
-                                "description": "Key entities found in the document (people, organizations, locations)",
-                                "additionalProperties": True,
-                            },
-                            "dates": {
-                                "type": "array",
-                                "description": "Important dates found in the document",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "date": {"type": "string"},
-                                        "description": {"type": "string"}
-                                    }
-                                }
-                            },
-                            "amounts": {
-                                "type": "array",
-                                "description": "Monetary amounts or numerical values",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "value": {"type": "number"},
-                                        "currency": {"type": "string"},
-                                        "description": {"type": "string"}
-                                    }
-                                }
-                            },
-                            "key_information": {
-                                "type": "object",
-                                "description": "Other important structured data from the document",
-                                "additionalProperties": True,
-                            },
-                            "summary": {
-                                "type": "string",
-                                "description": "Brief summary of the document content",
-                            },
-                        },
-                        "additionalProperties": True,
-                        "required": ["document_type", "summary"],
-                    },
-                    "strict": False,
-                },
-            },
-        },
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-        },
+    """
+    
+    completion = client.beta.chat.completions.parse(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
+        response_format=DocumentData,
     )
-
-    response.raise_for_status()
-    received_json = (
-        response.json().get("output", [{}])[0].get("content", [{}])[0].get("text", "{}")
-    )
-    return json.loads(received_json)
+    
+    return completion.choices[0].message.parsed
 
 
 def main():
@@ -186,10 +147,10 @@ def main():
         try:
             pdf_content = get_pdf_content(pdf_file)
             document_details = extract_data_from_pdf(pdf_content, pdf_file)
-            document_type = document_details.get("document_type", "unknown")
-            insert_document_data(conn, pdf_file, document_type, document_details)
+            document_type = document_details.document_type
+            insert_document_data(conn, pdf_file, document_type, document_details.model_dump())
             print("Extracted Document Details:")
-            print(json.dumps(document_details, indent=2))
+            print(json.dumps(document_details.model_dump(), indent=2))
             print("---------")
         except Exception as e:
             print(f"An error occurred while processing {pdf_file}: {e}")

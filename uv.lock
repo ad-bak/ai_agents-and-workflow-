@@ -8,6 +8,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "openai" },
+    { name = "pydantic" },
     { name = "pypdf" },
     { name = "python-dotenv" },
     { name = "requests" },
@@ -16,6 +17,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "openai", specifier = ">=1.102.0" },
+    { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pypdf", specifier = ">=6.0.0" },
     { name = "python-dotenv", specifier = ">=1.1.1" },
     { name = "requests", specifier = ">=2.32.5" },
